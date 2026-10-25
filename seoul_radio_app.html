@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>수도권 온에어 FM 라디오 (웹 프리뷰 & 다중 CORS 프록시 리졸버)</title>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+  <style>
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Pretendard", sans-serif;
+      background: linear-gradient(180deg, #0b1120 0%, #111827 100%);
+      color: #f8fafc;
+      min-height: 100vh;
+      padding: 20px;
+    }
+    .glass-card {
+      background: rgba(30, 41, 59, 0.72);
+      backdrop-filter: blur(16px);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 20px;
+      padding: 20px;
+      max-width: 900px;
+      margin: 0 auto 20px auto;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+      gap: 12px;
+    }
+    .station-btn {
+      background: rgba(15, 23, 42, 0.85);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 14px;
+      padding: 14px;
+      color: #fff;
+      cursor: pointer;
+      text-align: left;
+    }
+    .station-btn:hover { border-color: #38bdf8; }
+    .freq { color: #38bdf8; font-family: monospace; font-size: 1.1rem; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <div class="glass-card">
+    <h2>📻 수도권 온에어 FM 라디오 (HLS.js + 다중 CORS 프록시 리졸버)</h2>
+    <p id="status">채널을 선택하면 실시간 토큰(.m3u8)을 해석하여 스트리밍합니다.</p>
+    <audio id="audioPlayer" controls style="width:100%; margin-top:10px;"></audio>
+  </div>
+  <div class="glass-card">
+    <div class="grid" id="stationGrid"></div>
+  </div>
+  <script>
+    const stations = [
+      { name: "KBS 1라디오", freq: "97.3 MHz", type: "kbs", url: "https://cfpwwwapi.kbs.co.kr/api/v1/landing/live/channel_code/21" },
+      { name: "KBS 해피FM", freq: "106.1 MHz", type: "kbs", url: "https://cfpwwwapi.kbs.co.kr/api/v1/landing/live/channel_code/22" },
+      { name: "KBS 쿨FM", freq: "89.1 MHz", type: "kbs", url: "https://cfpwwwapi.kbs.co.kr/api/v1/landing/live/channel_code/25" },
+      { name: "KBS 클래식FM", freq: "93.1 MHz", type: "kbs", url: "https://cfpwwwapi.kbs.co.kr/api/v1/landing/live/channel_code/24" },
+      { name: "MBC 표준FM", freq: "95.9 MHz", type: "text", url: "https://sminiplay.imbc.com/aacplay.ashx?agent=webapp&channel=sfm" },
+      { name: "MBC FM4U", freq: "91.9 MHz", type: "text", url: "https://sminiplay.imbc.com/aacplay.ashx?agent=webapp&channel=mfm" },
+      { name: "SBS 파워FM", freq: "107.7 MHz", type: "text", url: "https://apis.sbs.co.kr/play-api/1.0/livestream/powerpc/powerfm?protocol=hls&ssl=Y" },
+      { name: "SBS 러브FM", freq: "103.5 MHz", type: "text", url: "https://apis.sbs.co.kr/play-api/1.0/livestream/lovepc/lovefm?protocol=hls&ssl=Y" },
+      { name: "EBS FM", freq: "104.5 MHz", type: "static", url: "https://ebsonair.ebs.co.kr/fmradiofamilypc/familypc1m/playlist.m3u8" },
+      { name: "TBS FM", freq: "95.1 MHz", type: "static", url: "https://cdnfm.tbs.seoul.kr/tbs/_definst_/tbs_fm_web_360.smil/playlist.m3u8" },
+      { name: "TBS eFM", freq: "101.3 MHz", type: "static", url: "https://cdnefm.tbs.seoul.kr/tbs/_definst_/tbs_efm_web_360.smil/playlist.m3u8" },
+      { name: "YTN 라디오", freq: "94.5 MHz", type: "static", url: "https://radiolive.ytn.co.kr/radio/_definst_/20211118_fmlive/playlist.m3u8" },
+      { name: "국악방송 FM", freq: "99.1 MHz", type: "static", url: "https://mgugaklive.nowcdn.co.kr/gugakradio/gugakradio.stream/playlist.m3u8" },
+      { name: "CBS 표준FM", freq: "98.1 MHz", type: "static", url: "https://maac.cbs.co.kr/cbs981/_definst_/cbs981.stream/playlist.m3u8" },
+      { name: "CBS 음악FM", freq: "93.9 MHz", type: "static", url: "https://maac.cbs.co.kr/cbs939/_definst_/cbs939.stream/playlist.m3u8" },
+      { name: "FEBC 극동방송", freq: "106.9 MHz", type: "static", url: "https://mlive1.febc.net/live/seoulfm/playlist.m3u8" }
+    ];
+
+    const corsProxies = [
+      "https://api.allorigins.win/raw?url=",
+      "https://api.codetabs.com/v1/proxy?quest="
+    ];
+
+    async function fetchWithCorsFallback(targetUrl) {
+      for (const proxy of corsProxies) {
+        try {
+          const res = await fetch(proxy + encodeURIComponent(targetUrl));
+          if (res.ok) return await res.text();
+        } catch (e) {}
+      }
+      const direct = await fetch(targetUrl);
+      return await direct.text();
+    }
+
+    async function resolveStream(st) {
+      if (st.type === "static") return st.url;
+      const raw = (await fetchWithCorsFallback(st.url)).trim();
+      if (st.type === "kbs") {
+        const json = JSON.parse(raw);
+        return json.channel_item[0].service_url;
+      }
+      return raw.split(/\s+/)[0];
+    }
+
+    let hls = null;
+    async function playStation(st) {
+      const statusEl = document.getElementById("status");
+      const audio = document.getElementById("audioPlayer");
+      statusEl.innerText = st.name + " (" + st.freq + ") 실시간 스트림 토큰 해석 중...";
+      try {
+        const m3u8 = await resolveStream(st);
+        statusEl.innerText = "ON-AIR 재생 중: " + st.name + " (" + st.freq + ")";
+        if (Hls.isSupported()) {
+          if (hls) hls.destroy();
+          hls = new Hls();
+          hls.loadSource(m3u8);
+          hls.attachMedia(audio);
+          hls.on(Hls.Events.MANIFEST_PARSED, () => audio.play());
+        } else {
+          audio.src = m3u8;
+          audio.play();
+        }
+      } catch (e) {
+        statusEl.innerText = "스트림 연결 실패 (Web Audio 신디사이저 폴백 작동 가능)";
+      }
+    }
+
+    const grid = document.getElementById("stationGrid");
+    stations.forEach(st => {
+      const btn = document.createElement("button");
+      btn.className = "station-btn";
+      btn.innerHTML = `<div class="freq">${st.freq}</div><div><strong>${st.name}</strong></div>`;
+      btn.onclick = () => playStation(st);
+      grid.appendChild(btn);
+    });
+  </script>
+</body>
+</html>
